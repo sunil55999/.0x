@@ -13,7 +13,6 @@ from telethon.tl.types import (
 from telethon.tl.functions.messages import SendMediaRequest
 from collections import deque
 from datetime import datetime
-import emoji
 import imagehash
 from PIL import Image
 import io
@@ -21,7 +20,7 @@ import traceback
 import re
 
 # Configuration
-API_ID = 23697291 # Replace with your API ID
+API_ID = 23697291  # Replace with your API ID
 API_HASH = "b3a10e33ef507e864ed7018df0495ca8"  # Replace with your API hash
 SESSION_FILE = "userbot_session"
 client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
@@ -81,9 +80,6 @@ async def process_message_queue():
         message_data = message_queue.popleft()
         await forward_message_with_retry(*message_data)
 
-def render_emoji(text):
-    return emoji.emojize(text, language='alias')
-
 def filter_blacklisted_words(text, blacklist):
     if not text or not blacklist:
         return text
@@ -132,7 +128,7 @@ def apply_custom_header_footer(text, custom_header, custom_footer):
         result = f"{result.rstrip()}\n{custom_footer}"
     return result.strip()
 
-async def send_split_forwarded_message(client, entity, message_text, reply_to=None, silent=False, entities=None):
+async def send_split_message(client, entity, message_text, reply_to=None, silent=False, entities=None):
     if len(message_text) <= MAX_MESSAGE_LENGTH:
         return await client.send_message(
             entity=entity,
@@ -147,23 +143,22 @@ async def send_split_forwarded_message(client, entity, message_text, reply_to=No
         sent_msg = await client.send_message(
             entity=entity,
             message=part,
-            reply_to=reply_to if not sent_messages else None,  # Only reply to the first part
+            reply_to=reply_to if not sent_messages else None,
             silent=silent,
-            formatting_entities=entities if entities and not sent_messages else None  # Entities only for first part
+            formatting_entities=entities if entities and not sent_messages else None
         )
         sent_messages.append(sent_msg)
-        await asyncio.sleep(0.5)  # Small delay to avoid flooding
-    return sent_messages[0] if sent_messages else None  # Return first message ID for mapping
+        await asyncio.sleep(0.5)
+    return sent_messages[0] if sent_messages else None
 
 def extract_message_from_updates(updates):
-    """Helper function to extract Message object from Updates."""
     if isinstance(updates, Updates):
         for update in updates.updates:
             if isinstance(update, UpdateNewMessage):
                 return update.message
         logger.error("No UpdateNewMessage found in Updates object")
         return None
-    return updates  # If not Updates, assume it's already a Message
+    return updates
 
 async def forward_message_with_retry(event, mapping, user_id, pair_name):
     for attempt in range(MAX_RETRIES):
@@ -173,7 +168,6 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
             media = event.message.media
             reply_to = await handle_reply_mapping(event, mapping)
 
-            # Apply filters to text if present
             if message_text:
                 if mapping.get('blocked_sentences'):
                     should_block, matching_sentence = check_blocked_sentences(message_text, mapping['blocked_sentences'])
@@ -217,9 +211,6 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
                 if message_text != event.message.raw_text:
                     original_entities = None
 
-                message_text = render_emoji(message_text)
-
-            # Handle different media types
             if media:
                 if isinstance(media, MessageMediaPhoto):
                     if mapping.get('blocked_image_hashes'):
@@ -261,10 +252,7 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
                             quiz=poll.quiz
                         )
                     )
-                    if reply_to:
-                        reply_to_obj = InputReplyToMessage(reply_to_msg_id=reply_to)
-                    else:
-                        reply_to_obj = None
+                    reply_to_obj = InputReplyToMessage(reply_to_msg_id=reply_to) if reply_to else None
                     sent_message = await client(SendMediaRequest(
                         peer=int(mapping['destination']),
                         media=input_media_poll,
@@ -360,13 +348,12 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
                         silent=event.message.silent
                     )
             else:
-                # No media, just text
                 if not message_text.strip():
                     logger.info("Message skipped: empty text with no media")
                     pair_stats[user_id][pair_name]['blocked'] += 1
                     return True
                 if len(message_text) > MAX_MESSAGE_LENGTH:
-                    sent_message = await send_split_forwarded_message(
+                    sent_message = await send_split_message(
                         client,
                         int(mapping['destination']),
                         message_text,
@@ -395,7 +382,7 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
             await asyncio.sleep(wait_time)
         except errors.MessageTooLongError:
             logger.warning("Message too long; splitting and retrying.")
-            sent_message = await send_split_forwarded_message(
+            sent_message = await send_split_message(
                 client,
                 int(mapping['destination']),
                 message_text,
@@ -419,7 +406,7 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
                 if NOTIFY_CHAT_ID:
                     await client.send_message(
                         NOTIFY_CHAT_ID,
-                        f"?? Error: Failed to forward message for pair '{pair_name}' after {MAX_RETRIES} attempts. Error: {e}"
+                        f"❌ Error: Failed to forward message for pair '{pair_name}' after {MAX_RETRIES} attempts. Error: {e}"
                     )
                 return False
         except Exception as e:
@@ -427,7 +414,7 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
             if NOTIFY_CHAT_ID:
                 await client.send_message(
                     NOTIFY_CHAT_ID,
-                    f"?? Unexpected Error: Pair '{pair_name}' failed. Error: {e}"
+                    f"⚠️ Unexpected Error: Pair '{pair_name}' failed. Error: {e}"
                 )
             return False
 
@@ -482,7 +469,7 @@ async def edit_forwarded_message(event, mapping, user_id, pair_name):
                 return
 
         if mapping.get('block_urls', False) or mapping.get('blacklist_urls'):
-            message_text, allow_preview = filter_urls(
+            message_text, _ = filter_urls(
                 message_text, 
                 mapping.get('block_urls', False), 
                 mapping.get('blacklist_urls')
@@ -516,9 +503,6 @@ async def edit_forwarded_message(event, mapping, user_id, pair_name):
         if message_text != event.message.raw_text:
             original_entities = None
 
-        message_text = render_emoji(message_text)
-
-        # Polls and some media types cannot be edited; resend instead
         if isinstance(media, MessageMediaPoll):
             logger.info(f"Poll message {forwarded_msg_id} cannot be edited; deleting and resending")
             await client.delete_messages(int(mapping['destination']), [forwarded_msg_id])
@@ -607,9 +591,9 @@ async def store_message_mapping(event, mapping, sent_message):
     except Exception as e:
         logger.error(f"Error storing message mapping: {e}")
 
-async def send_split_message(event, full_message):
+async def send_split_message_event(event, full_message):
     if len(full_message) <= MAX_MESSAGE_LENGTH:
-        await event.reply(render_emoji(full_message))
+        await event.reply(full_message)
         return
 
     parts = []
@@ -624,17 +608,17 @@ async def send_split_message(event, full_message):
         parts.append(current_part.strip())
 
     for i, part in enumerate(parts, 1):
-        await event.reply(render_emoji(f"Part {i}/{len(parts)}\n{part}"))
+        await event.reply(f"📜 Part {i}/{len(parts)}\n{part}")
         await asyncio.sleep(0.5)
 
 @client.on(events.NewMessage(pattern='(?i)^/start$'))
 async def start(event):
-    await event.reply(render_emoji("? ForwardBot Running!\nUse `/commands` for options."))
+    await event.reply("✅ ForwardBot Running!\nUse `/commands` for options.")
 
 @client.on(events.NewMessage(pattern='(?i)^/commands$'))
 async def list_commands(event):
-    commands = render_emoji("""
-    ?? ForwardBot Commands
+    commands = """
+    📋 ForwardBot Commands
 
     Setup & Management
     - `/setpair <name> <source> <dest> [yes|no]` - Add a forwarding pair (yes/no for mentions)
@@ -644,8 +628,9 @@ async def list_commands(event):
     - `/clearpairs` - Remove all pairs
     - `/togglementions <name>` - Toggle mention removal
     - `/monitor` - View pair stats
+    - `/status` - Check bot status
 
-    ?? Filters
+    🔍 Filters
     - `/addblacklist <name> <word1,word2,...>` - Blacklist words
     - `/clearblacklist <name>` - Clear blacklist
     - `/showblacklist <name>` - Show blacklist
@@ -656,32 +641,40 @@ async def list_commands(event):
     - `/setfooter <name> <text>` - Set footer to remove
     - `/clearheaderfooter <name>` - Clear header/footer
 
-    ??? Image Blocking
+    🖼️ Image Blocking
     - `/blockimage <name>` - Block a specific image (reply to image)
     - `/clearblockedimages <name>` - Clear blocked images
     - `/showblockedimages <name>` - Show blocked image hashes
 
-    ?? Custom Text
-    - `/setcustomheader <name> <text>` - Add custom header
-    - `/setcustomfooter <name> <text>` - Add custom footer
+    ✍️ Custom Text
+    - `/setcustomheader <name> <text>` - Set custom header
+    - `/setcustomfooter <name> <text>` - Set custom footer
     - `/clearcustomheaderfooter <name>` - Clear custom text
 
-    ?? Blocking
+    🚫 Blocking
     - `/blocksentence <name> <sentence>` - Block a sentence
     - `/clearblocksentences <name>` - Clear blocked sentences
     - `/showblocksentences <name>` - Show blocked sentences
-    """)
+    """
     await event.reply(commands)
+
+@client.on(events.NewMessage(pattern='(?i)^/status$'))
+async def status(event):
+    status_msg = f"🛠️ Bot Status\n" \
+                 f"📡 Connected: {'✅' if is_connected else '❌'}\n" \
+                 f"📥 Queue Size: {len(message_queue)}/{MAX_QUEUE_SIZE}\n" \
+                 f"📊 Total Pairs: {sum(len(pairs) for pairs in channel_mappings.values())}"
+    await event.reply(status_msg)
 
 @client.on(events.NewMessage(pattern='(?i)^/monitor$'))
 async def monitor_pairs(event):
     user_id = str(event.sender_id)
     if user_id not in channel_mappings or not channel_mappings[user_id]:
-        await event.reply(render_emoji("?? No forwarding pairs found."))
+        await event.reply("❌ No forwarding pairs found.")
         return
 
-    header = render_emoji("?? Forwarding Monitor\n--------------------\n")
-    footer = render_emoji(f"\n--------------------\n?? Total Queued: {len(message_queue)}")
+    header = "📊 Forwarding Monitor\n--------------------\n"
+    footer = f"\n--------------------\n📥 Total Queued: {len(message_queue)}"
     report = []
     for pair_name, data in channel_mappings[user_id].items():
         stats = pair_stats.get(user_id, {}).get(pair_name, {
@@ -691,17 +684,15 @@ async def monitor_pairs(event):
         if len(last_activity) > 20:
             last_activity = last_activity[:17] + "..."
         report.append(
-            render_emoji(
-                f"?? {pair_name}\n"
-                f"   ? Route: {data['source']} ? {data['destination']}\n"
-                f"   ? Status: {'? Active' if data['active'] else '?? Paused'}\n"
-                f"   ? Stats: Fwd: {stats['forwarded']} | Edt: {stats['edited']} | Del: {stats['deleted']} | Blk: {stats['blocked']} | Que: {stats['queued']}\n"
-                f"   ? Last: {last_activity}\n"
-                f"---------------"
-            )
+            f"📌 {pair_name}\n"
+            f"   ➡️ Route: {data['source']} → {data['destination']}\n"
+            f"   ✅ Status: {'Active' if data['active'] else 'Paused'}\n"
+            f"   📈 Stats: Fwd: {stats['forwarded']} | Edt: {stats['edited']} | Del: {stats['deleted']} | Blk: {stats['blocked']} | Que: {stats['queued']}\n"
+            f"   ⏰ Last: {last_activity}\n"
+            f"---------------"
         )
     full_message = header + "\n".join(report) + footer
-    await send_split_message(event, full_message)
+    await send_split_message_event(event, full_message)
 
 @client.on(events.NewMessage(pattern=r'/setpair (\S+) (\S+) (\S+)(?: (yes|no))?'))
 async def set_pair(event):
@@ -735,32 +726,24 @@ async def set_pair(event):
     pair_stats[user_id][pair_name] = {'forwarded': 0, 'edited': 0, 'deleted': 0, 'blocked': 0, 'queued': 0, 'last_activity': None}
     save_mappings()
     logger.info(f"Pair {pair_name} successfully set for user {user_id}")
-    await event.reply(render_emoji(f"? Pair '{pair_name}' Added\n{source} ? {destination}\nMentions: {'?' if remove_mentions else '??'}"))
+    await event.reply(f"✅ Pair '{pair_name}' Added\n{source} ➡️ {destination}\nMentions: {'✅' if remove_mentions else '❌'}")
 
 @client.on(events.NewMessage(pattern=r'/blockimage (\S+)'))
 async def block_image(event):
     pair_name = event.pattern_match.group(1)
     user_id = str(event.sender_id)
 
-    logger.info(f"Block image command received from user {user_id} for pair {pair_name}")
-
-    if user_id not in channel_mappings:
-        logger.warning(f"No mappings found for user {user_id}")
-        await event.reply(render_emoji("?? No pairs configured yet. Please use /setpair first."))
-        return
-
-    if pair_name not in channel_mappings[user_id]:
-        logger.warning(f"Pair {pair_name} not found for user {user_id}")
-        await event.reply(render_emoji(f"?? Pair '{pair_name}' not found. Use /listpairs to see available pairs or /setpair to create it."))
+    if user_id not in channel_mappings or pair_name not in channel_mappings[user_id]:
+        await event.reply("❌ Pair not found. Use /listpairs or /setpair.")
         return
 
     if not event.message.reply_to:
-        await event.reply(render_emoji("?? Please reply to an image to block it"))
+        await event.reply("📷 Please reply to an image to block it.")
         return
 
     replied_msg = await event.get_reply_message()
     if not isinstance(replied_msg.media, MessageMediaPhoto):
-        await event.reply(render_emoji("?? Please reply to a photo message"))
+        await event.reply("📷 Please reply to a photo message.")
         return
 
     try:
@@ -773,10 +756,10 @@ async def block_image(event):
         save_mappings()
 
         logger.info(f"Blocked image hash {image_hash} for pair {pair_name} by user {user_id}")
-        await event.reply(render_emoji(f"??? Image hash {image_hash} blocked for '{pair_name}'"))
+        await event.reply(f"🖼️ Image hash {image_hash} blocked for '{pair_name}'")
     except Exception as e:
-        logger.error(f"Error blocking image for {pair_name}: {str(e)}\n{traceback.format_exc()}")
-        await event.reply(render_emoji(f"?? Error blocking image: {str(e)}"))
+        logger.error(f"Error blocking image: {e}", exc_info=True)
+        await event.reply(f"❌ Error blocking image: {str(e)}")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearblockedimages (\S+)$'))
 async def clear_blocked_images(event):
@@ -786,10 +769,9 @@ async def clear_blocked_images(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['blocked_image_hashes'] = []
         save_mappings()
-        logger.info(f"Cleared blocked images for pair {pair_name} by user {user_id}")
-        await event.reply(render_emoji(f"??? Blocked images cleared for '{pair_name}'"))
+        await event.reply(f"🖼️ Blocked images cleared for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/showblockedimages (\S+)$'))
 async def show_blocked_images(event):
@@ -800,11 +782,11 @@ async def show_blocked_images(event):
         blocked_hashes = channel_mappings[user_id][pair_name].get('blocked_image_hashes', [])
         if blocked_hashes:
             hashes_list = "\n".join([f"• {h}" for h in blocked_hashes])
-            await event.reply(render_emoji(f"?? Blocked Image Hashes for '{pair_name}'\n{hashes_list}"))
+            await event.reply(f"🖼️ Blocked Image Hashes for '{pair_name}'\n{hashes_list}")
         else:
-            await event.reply(render_emoji(f"?? No Blocked Images for '{pair_name}'"))
+            await event.reply(f"ℹ️ No blocked images for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/blocksentence (\S+) (.+)'))
 async def block_sentence(event):
@@ -813,9 +795,9 @@ async def block_sentence(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name].setdefault('blocked_sentences', []).append(sentence)
         save_mappings()
-        await event.reply(render_emoji(f"?? Blocked Sentence Added for '{pair_name}'"))
+        await event.reply(f"🚫 Blocked sentence added for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearblocksentences (\S+)$'))
 async def clear_block_sentences(event):
@@ -824,9 +806,9 @@ async def clear_block_sentences(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['blocked_sentences'] = []
         save_mappings()
-        await event.reply(render_emoji(f"??? Blocked Sentences Cleared for '{pair_name}'"))
+        await event.reply(f"🚫 Blocked sentences cleared for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/showblocksentences (\S+)$'))
 async def show_block_sentences(event):
@@ -836,11 +818,11 @@ async def show_block_sentences(event):
         blocked_sentences = channel_mappings[user_id][pair_name].get('blocked_sentences', [])
         if blocked_sentences:
             sentences_list = "\n".join([f"• {s}" for s in blocked_sentences])
-            await event.reply(render_emoji(f"?? Blocked Sentences for '{pair_name}'\n{sentences_list}"))
+            await event.reply(f"🚫 Blocked Sentences for '{pair_name}'\n{sentences_list}")
         else:
-            await event.reply(render_emoji(f"?? No Blocked Sentences for '{pair_name}'"))
+            await event.reply(f"ℹ️ No blocked sentences for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/addblacklist (\S+) (.+)'))
 async def add_blacklist(event):
@@ -850,9 +832,9 @@ async def add_blacklist(event):
         channel_mappings[user_id][pair_name].setdefault('blacklist', []).extend([w.strip() for w in words])
         channel_mappings[user_id][pair_name]['blacklist'] = list(set(channel_mappings[user_id][pair_name]['blacklist']))
         save_mappings()
-        await event.reply(render_emoji(f"?? Added {len(words)} Word(s) to blacklist for '{pair_name}'"))
+        await event.reply(f"🔍 Added {len(words)} word(s) to blacklist for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearblacklist (\S+)$'))
 async def clear_blacklist(event):
@@ -861,9 +843,9 @@ async def clear_blacklist(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['blacklist'] = []
         save_mappings()
-        await event.reply(render_emoji(f"??? Blacklist Cleared for '{pair_name}'"))
+        await event.reply(f"🔍 Blacklist cleared for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/showblacklist (\S+)$'))
 async def show_blacklist(event):
@@ -873,11 +855,11 @@ async def show_blacklist(event):
         blacklist = channel_mappings[user_id][pair_name].get('blacklist', [])
         if blacklist:
             words_list = ", ".join(blacklist)
-            await event.reply(render_emoji(f"?? Blacklist for '{pair_name}'\n{words_list}"))
+            await event.reply(f"🔍 Blacklist for '{pair_name}'\n{words_list}")
         else:
-            await event.reply(render_emoji(f"?? No Blacklisted Words for '{pair_name}'"))
+            await event.reply(f"ℹ️ No blacklisted words for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/toggleurlblock (\S+)$'))
 async def toggle_url_block(event):
@@ -888,9 +870,9 @@ async def toggle_url_block(event):
         channel_mappings[user_id][pair_name]['block_urls'] = not current_status
         save_mappings()
         status = "ENABLED" if not current_status else "DISABLED"
-        await event.reply(render_emoji(f"?? URL Blocking {status} for '{pair_name}'"))
+        await event.reply(f"🔗 URL Blocking {status} for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/addurlblacklist (\S+) (.+)'))
 async def add_url_blacklist(event):
@@ -900,9 +882,9 @@ async def add_url_blacklist(event):
         channel_mappings[user_id][pair_name].setdefault('blacklist_urls', []).extend([u.strip() for u in urls])
         channel_mappings[user_id][pair_name]['blacklist_urls'] = list(set(channel_mappings[user_id][pair_name]['blacklist_urls']))
         save_mappings()
-        await event.reply(render_emoji(f"?? Added {len(urls)} URL(s) to blacklist for '{pair_name}'"))
+        await event.reply(f"🔗 Added {len(urls)} URL(s) to blacklist for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearurlblacklist (\S+)$'))
 async def clear_url_blacklist(event):
@@ -911,9 +893,9 @@ async def clear_url_blacklist(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['blacklist_urls'] = []
         save_mappings()
-        await event.reply(render_emoji(f"??? URL Blacklist Cleared for '{pair_name}'"))
+        await event.reply(f"🔗 URL blacklist cleared for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/setheader (\S+) (.+)'))
 async def set_header(event):
@@ -922,9 +904,9 @@ async def set_header(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['header_pattern'] = pattern
         save_mappings()
-        await event.reply(render_emoji(f"?? Header Set for '{pair_name}': '{pattern}'"))
+        await event.reply(f"📑 Header set for '{pair_name}': '{pattern}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/setfooter (\S+) (.+)'))
 async def set_footer(event):
@@ -933,9 +915,9 @@ async def set_footer(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['footer_pattern'] = pattern
         save_mappings()
-        await event.reply(render_emoji(f"?? Footer Set for '{pair_name}': '{pattern}'"))
+        await event.reply(f"📑 Footer set for '{pair_name}': '{pattern}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearheaderfooter (\S+)$'))
 async def clear_header_footer(event):
@@ -945,9 +927,9 @@ async def clear_header_footer(event):
         channel_mappings[user_id][pair_name]['header_pattern'] = ''
         channel_mappings[user_id][pair_name]['footer_pattern'] = ''
         save_mappings()
-        await event.reply(render_emoji(f"??? Header/Footer Cleared for '{pair_name}'"))
+        await event.reply(f"📑 Header/Footer cleared for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/setcustomheader (\S+) (.+)'))
 async def set_custom_header(event):
@@ -956,9 +938,9 @@ async def set_custom_header(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['custom_header'] = text
         save_mappings()
-        await event.reply(render_emoji(f"?? Custom Header Set for '{pair_name}': '{text}'"))
+        await event.reply(f"✍️ Custom header set for '{pair_name}': '{text}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern=r'/setcustomfooter (\S+) (.+)'))
 async def set_custom_footer(event):
@@ -967,9 +949,9 @@ async def set_custom_footer(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['custom_footer'] = text
         save_mappings()
-        await event.reply(render_emoji(f"?? Custom Footer Set for '{pair_name}': '{text}'"))
+        await event.reply(f"✍️ Custom footer set for '{pair_name}': '{text}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearcustomheaderfooter (\S+)$'))
 async def clear_custom_header_footer(event):
@@ -979,9 +961,9 @@ async def clear_custom_header_footer(event):
         channel_mappings[user_id][pair_name]['custom_header'] = ''
         channel_mappings[user_id][pair_name]['custom_footer'] = ''
         save_mappings()
-        await event.reply(render_emoji(f"??? Custom Header/Footer Cleared for '{pair_name}'"))
+        await event.reply(f"✍️ Custom header/footer cleared for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/togglementions (\S+)$'))
 async def toggle_mentions(event):
@@ -992,38 +974,36 @@ async def toggle_mentions(event):
         channel_mappings[user_id][pair_name]['remove_mentions'] = not current_status
         save_mappings()
         status = "ENABLED" if not current_status else "DISABLED"
-        await event.reply(render_emoji(f"?? Mention Removal {status} for '{pair_name}'"))
+        await event.reply(f"👤 Mention removal {status} for '{pair_name}'")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/listpairs$'))
 async def list_pairs(event):
     user_id = str(event.sender_id)
     if user_id not in channel_mappings or not channel_mappings[user_id]:
-        await event.reply(render_emoji("?? No Forwarding Pairs Found"))
+        await event.reply("❌ No forwarding pairs found.")
         return
 
-    header = render_emoji("?? Forwarding Pairs List\n--------------------\n")
+    header = "📋 Forwarding Pairs List\n--------------------\n"
     pairs_list = []
     for name, data in channel_mappings[user_id].items():
         pairs_list.append(
-            render_emoji(
-                f"?? {name}\n"
-                f"   ? Route: {data['source']} ? {data['destination']}\n"
-                f"   ? Active: {'?' if data['active'] else '??'}\n"
-                f"   ? Mentions: {'?' if data['remove_mentions'] else '??'}\n"
-                f"   ? URLs: {'??' if data.get('block_urls', False) else '??'}\n"
-                f"   ? URL BL: {len(data.get('blacklist_urls', []))}\n"
-                f"   ? Header: '{data.get('header_pattern', '') or 'None'}'\n"
-                f"   ? Footer: '{data.get('footer_pattern', '') or 'None'}'\n"
-                f"   ? Custom H: '{data.get('custom_header', '') or 'None'}'\n"
-                f"   ? Custom F: '{data.get('custom_footer', '') or 'None'}'\n"
-                f"   ? Filters: BL: {len(data.get('blacklist', []))} | BS: {len(data.get('blocked_sentences', []))} | BI: {len(data.get('blocked_image_hashes', []))}\n"
-                f"---------------"
-            )
+            f"📌 {name}\n"
+            f"   ➡️ Route: {data['source']} → {data['destination']}\n"
+            f"   ✅ Active: {'Yes' if data['active'] else 'No'}\n"
+            f"   👤 Mentions: {'Removed' if data['remove_mentions'] else 'Kept'}\n"
+            f"   🔗 URLs: {'Blocked' if data.get('block_urls', False) else 'Allowed'}\n"
+            f"   🔗 URL BL: {len(data.get('blacklist_urls', []))}\n"
+            f"   📑 Header: '{data.get('header_pattern', '') or 'None'}'\n"
+            f"   📑 Footer: '{data.get('footer_pattern', '') or 'None'}'\n"
+            f"   ✍️ Custom H: '{data.get('custom_header', '') or 'None'}'\n"
+            f"   ✍️ Custom F: '{data.get('custom_footer', '') or 'None'}'\n"
+            f"   🔍 Filters: BL: {len(data.get('blacklist', []))} | BS: {len(data.get('blocked_sentences', []))} | BI: {len(data.get('blocked_image_hashes', []))}\n"
+            f"---------------"
         )
     full_message = header + "\n".join(pairs_list)
-    await send_split_message(event, full_message)
+    await send_split_message_event(event, full_message)
 
 @client.on(events.NewMessage(pattern='(?i)^/pausepair (\S+)$'))
 async def pause_pair(event):
@@ -1032,9 +1012,9 @@ async def pause_pair(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['active'] = False
         save_mappings()
-        await event.reply(render_emoji(f"?? Pair '{pair_name}' Paused"))
+        await event.reply(f"⏸️ Pair '{pair_name}' paused.")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/startpair (\S+)$'))
 async def start_pair(event):
@@ -1043,9 +1023,9 @@ async def start_pair(event):
     if user_id in channel_mappings and pair_name in channel_mappings[user_id]:
         channel_mappings[user_id][pair_name]['active'] = True
         save_mappings()
-        await event.reply(render_emoji(f"?? Pair '{pair_name}' Activated"))
+        await event.reply(f"▶️ Pair '{pair_name}' activated.")
     else:
-        await event.reply(render_emoji("?? Pair not found"))
+        await event.reply("❌ Pair not found.")
 
 @client.on(events.NewMessage(pattern='(?i)^/clearpairs$'))
 async def clear_pairs(event):
@@ -1054,9 +1034,9 @@ async def clear_pairs(event):
         channel_mappings[user_id] = {}
         pair_stats[user_id] = {}
         save_mappings()
-        await event.reply(render_emoji("??? All Pairs Cleared"))
+        await event.reply("🗑️ All pairs cleared.")
     else:
-        await event.reply(render_emoji("?? No pairs to clear"))
+        await event.reply("❌ No pairs to clear.")
 
 @client.on(events.NewMessage)
 async def forward_messages(event):
@@ -1111,11 +1091,11 @@ async def check_connection_status():
         current_status = client.is_connected()
         if current_status and not is_connected:
             is_connected = True
-            logger.info("Connection established, processing queue...")
+            logger.info("📡 Connection established, processing queue...")
             await process_message_queue()
         elif not current_status and is_connected:
             is_connected = False
-            logger.warning("Connection lost, queuing messages...")
+            logger.warning("📡 Connection lost, queuing messages...")
         await asyncio.sleep(5)
 
 async def check_pair_inactivity():
@@ -1137,7 +1117,7 @@ async def check_pair_inactivity():
                 if inactivity_duration > INACTIVITY_THRESHOLD:
                     await client.send_message(
                         NOTIFY_CHAT_ID,
-                        render_emoji(f"?? Inactivity Alert: Pair '{pair_name}' has had no activity for over {INACTIVITY_THRESHOLD // 3600} hours.")
+                        f"⏰ Inactivity Alert: Pair '{pair_name}' inactive for over {INACTIVITY_THRESHOLD // 3600} hours."
                     )
                     pair_stats[user_id][pair_name]['last_activity'] = datetime.now().isoformat()
 
@@ -1147,7 +1127,7 @@ async def send_periodic_report():
         if not is_connected or not MONITOR_CHAT_ID:
             continue
         for user_id in channel_mappings:
-            header = render_emoji("?? 6-Hour Report\n--------------------\n")
+            header = "📊 6-Hour Report\n--------------------\n"
             report = []
             total_queued = len(message_queue)
             for pair_name, data in channel_mappings[user_id].items():
@@ -1155,16 +1135,14 @@ async def send_periodic_report():
                     'forwarded': 0, 'edited': 0, 'deleted': 0, 'blocked': 0, 'queued': 0, 'last_activity': None
                 })
                 report.append(
-                    render_emoji(
-                        f"?? {pair_name}\n"
-                        f"   ? Route: {data['source']} ? {data['destination']}\n"
-                        f"   ? Status: {'Active' if data['active'] else 'Paused'}\n"
-                        f"   ? Fwd: {stats['forwarded']} | Edt: {stats['edited']} | Del: {stats['deleted']}\n"
-                        f"   ? Blk: {stats['blocked']} | Que: {stats['queued']}\n"
-                        f"---------------"
-                    )
+                    f"📌 {pair_name}\n"
+                    f"   ➡️ Route: {data['source']} → {data['destination']}\n"
+                    f"   ✅ Status: {'Active' if data['active'] else 'Paused'}\n"
+                    f"   📈 Fwd: {stats['forwarded']} | Edt: {stats['edited']} | Del: {stats['deleted']}\n"
+                    f"   🚫 Blk: {stats['blocked']} | 📥 Que: {stats['queued']}\n"
+                    f"---------------"
                 )
-            full_message = header + "\n".join(report) + render_emoji(f"\n?? Queued: {total_queued}")
+            full_message = header + "\n".join(report) + f"\n📥 Queued: {total_queued}"
             try:
                 await client.send_message(MONITOR_CHAT_ID, full_message)
                 logger.info("Sent periodic report")
@@ -1175,16 +1153,20 @@ async def heartbeat():
     while True:
         await asyncio.sleep(300)  # 5 minutes
         if not await client.is_user_authorized():
-            logger.error("Disconnected, attempting to reconnect...")
+            logger.error("📡 Disconnected, attempting to reconnect...")
             await client.connect()
 
 async def main():
     load_mappings()
-    asyncio.create_task(check_connection_status())
-    asyncio.create_task(send_periodic_report())
-    asyncio.create_task(check_pair_inactivity())
-    asyncio.create_task(heartbeat())
-    logger.info("?? Bot is starting...")
+    tasks = [
+        check_connection_status(),
+        send_periodic_report(),
+        check_pair_inactivity(),
+        heartbeat()
+    ]
+    for task in tasks:
+        asyncio.create_task(task)
+    logger.info("🤖 Bot is starting...")
 
     try:
         await client.start()
@@ -1200,21 +1182,21 @@ async def main():
         NOTIFY_CHAT_ID = MONITOR_CHAT_ID
 
         if is_connected:
-            logger.info("Initial connection established")
+            logger.info("📡 Initial connection established")
         else:
-            logger.warning("Initial connection not established")
+            logger.warning("📡 Initial connection not established")
 
         await client.run_until_disconnected()
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.error(f"❌ Fatal error: {e}", exc_info=True)
     finally:
-        logger.info("Bot is shutting down...")
+        logger.info("🤖 Bot is shutting down...")
         save_mappings()
 
 if __name__ == "__main__":
     try:
         client.loop.run_until_complete(main())
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("🤖 Bot stopped by user")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"❌ Unexpected error: {e}", exc_info=True)
