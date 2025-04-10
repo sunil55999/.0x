@@ -34,6 +34,8 @@ MONITOR_CHAT_ID = None
 NOTIFY_CHAT_ID = None
 INACTIVITY_THRESHOLD = 21600  # 6 hours in seconds
 MAX_MESSAGE_LENGTH = 4096  # Telegram's max message length
+FORWARD_DELAY = 1  # seconds delay between forwarding messages
+QUEUE_INACTIVITY_THRESHOLD = 600  # 10 minutes in seconds for queue inactivity alert
 
 # Logging setup
 logging.basicConfig(
@@ -45,11 +47,12 @@ logger = logging.getLogger("ForwardBot")
 
 # Data structures
 channel_mappings = {}
-message_queue = deque(maxlen=MAX_QUEUE_SIZE)
+message_queue = deque(maxlen=MAX_QUEUE_SIZE)  # Now stores (event, mapping, user_id, pair_name, queued_time)
 is_connected = False
 pair_stats = {}
 
 def save_mappings():
+    """Save channel mappings to file."""
     try:
         with open(MAPPINGS_FILE, "w") as f:
             json.dump(channel_mappings, f)
@@ -58,6 +61,7 @@ def save_mappings():
         logger.error(f"Error saving mappings: {e}")
 
 def load_mappings():
+    """Load channel mappings from file and initialize stats."""
     global channel_mappings
     try:
         with open(MAPPINGS_FILE, "r") as f:
@@ -75,12 +79,8 @@ def load_mappings():
     except Exception as e:
         logger.error(f"Error loading mappings: {e}")
 
-async def process_message_queue():
-    while message_queue and is_connected:
-        message_data = message_queue.popleft()
-        await forward_message_with_retry(*message_data)
-
 def filter_blacklisted_words(text, blacklist):
+    """Replace blacklisted words with asterisks."""
     if not text or not blacklist:
         return text
     for word in blacklist:
@@ -88,6 +88,7 @@ def filter_blacklisted_words(text, blacklist):
     return text
 
 def check_blocked_sentences(text, blocked_sentences):
+    """Check if text contains blocked sentences."""
     if not text or not blocked_sentences:
         return False, None
     for sentence in blocked_sentences:
@@ -96,6 +97,7 @@ def check_blocked_sentences(text, blocked_sentences):
     return False, None
 
 def filter_urls(text, block_urls, blacklist_urls=None):
+    """Filter or block URLs in text."""
     if not text or not block_urls:
         return text, True
     url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[^\s]*)?'
@@ -110,6 +112,7 @@ def filter_urls(text, block_urls, blacklist_urls=None):
         return text, False
 
 def remove_header_footer(text, header_pattern, footer_pattern):
+    """Remove specified header and footer from text."""
     if not text:
         return text
     if header_pattern and text.startswith(header_pattern):
@@ -119,6 +122,7 @@ def remove_header_footer(text, header_pattern, footer_pattern):
     return text
 
 def apply_custom_header_footer(text, custom_header, custom_footer):
+    """Add custom header and footer to text."""
     if not text:
         return text
     result = text
@@ -129,6 +133,7 @@ def apply_custom_header_footer(text, custom_header, custom_footer):
     return result.strip()
 
 async def send_split_message(client, entity, message_text, reply_to=None, silent=False, entities=None):
+    """Send long messages in parts if they exceed Telegram's limit."""
     if len(message_text) <= MAX_MESSAGE_LENGTH:
         return await client.send_message(
             entity=entity,
@@ -152,6 +157,7 @@ async def send_split_message(client, entity, message_text, reply_to=None, silent
     return sent_messages[0] if sent_messages else None
 
 def extract_message_from_updates(updates):
+    """Extract message from Telegram Updates object."""
     if isinstance(updates, Updates):
         for update in updates.updates:
             if isinstance(update, UpdateNewMessage):
@@ -161,6 +167,8 @@ def extract_message_from_updates(updates):
     return updates
 
 async def forward_message_with_retry(event, mapping, user_id, pair_name):
+    """Forward a message with retries and filtering."""
+    source_msg_id = event.message.id if hasattr(event.message, 'id') else "Unknown"
     for attempt in range(MAX_RETRIES):
         try:
             message_text = event.message.raw_text or ""
@@ -378,10 +386,10 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
 
         except errors.FloodWaitError as e:
             wait_time = e.seconds
-            logger.warning(f"Flood wait error, sleeping for {wait_time} seconds...")
+            logger.warning(f"Flood wait error, sleeping for {wait_time} seconds for pair '{pair_name}' (Source Msg ID: {source_msg_id})")
             await asyncio.sleep(wait_time)
         except errors.MessageTooLongError:
-            logger.warning("Message too long; splitting and retrying.")
+            logger.warning(f"Message too long; splitting and retrying for pair '{pair_name}' (Source Msg ID: {source_msg_id})")
             sent_message = await send_split_message(
                 client,
                 int(mapping['destination']),
@@ -398,27 +406,24 @@ async def forward_message_with_retry(event, mapping, user_id, pair_name):
                 return True
             return False
         except (errors.RPCError, ConnectionError) as e:
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
+            logger.warning(f"Attempt {attempt + 1} failed for pair '{pair_name}' (Source Msg ID: {source_msg_id}): {e}")
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAY)
             else:
-                logger.error(f"Failed to forward message after {MAX_RETRIES} attempts: {e}")
+                error_msg = f"❌ Failed to forward message for pair '{pair_name}' (Source Msg ID: {source_msg_id}) after {MAX_RETRIES} attempts. Error: {e}"
+                logger.error(error_msg)
                 if NOTIFY_CHAT_ID:
-                    await client.send_message(
-                        NOTIFY_CHAT_ID,
-                        f"❌ Error: Failed to forward message for pair '{pair_name}' after {MAX_RETRIES} attempts. Error: {e}"
-                    )
+                    await client.send_message(NOTIFY_CHAT_ID, error_msg)
                 return False
         except Exception as e:
-            logger.error(f"Unexpected error forwarding message: {e}", exc_info=True)
+            error_msg = f"⚠️ Unexpected error forwarding message for pair '{pair_name}' (Source Msg ID: {source_msg_id}): {e}"
+            logger.error(error_msg, exc_info=True)
             if NOTIFY_CHAT_ID:
-                await client.send_message(
-                    NOTIFY_CHAT_ID,
-                    f"⚠️ Unexpected Error: Pair '{pair_name}' failed. Error: {e}"
-                )
+                await client.send_message(NOTIFY_CHAT_ID, error_msg)
             return False
 
 async def edit_forwarded_message(event, mapping, user_id, pair_name):
+    """Edit a forwarded message based on source changes."""
     try:
         mapping_key = f"{mapping['source']}:{event.message.id}"
         if not hasattr(client, 'forwarded_messages'):
@@ -534,6 +539,7 @@ async def edit_forwarded_message(event, mapping, user_id, pair_name):
         logger.error(f"Error editing forwarded message {forwarded_msg_id}: {e}")
 
 async def delete_forwarded_message(event, mapping, user_id, pair_name):
+    """Delete a forwarded message if the source message is deleted."""
     try:
         mapping_key = f"{mapping['source']}:{event.message.id}"
         if not hasattr(client, 'forwarded_messages'):
@@ -558,6 +564,7 @@ async def delete_forwarded_message(event, mapping, user_id, pair_name):
         logger.error(f"Error deleting forwarded message: {e}")
 
 async def handle_reply_mapping(event, mapping):
+    """Map reply-to messages from source to destination."""
     if not hasattr(event.message, 'reply_to') or not event.message.reply_to:
         return None
     try:
@@ -577,6 +584,7 @@ async def handle_reply_mapping(event, mapping):
     return None
 
 async def store_message_mapping(event, mapping, sent_message):
+    """Store mapping of source to forwarded message IDs."""
     try:
         if not hasattr(event.message, 'id'):
             return
@@ -592,6 +600,7 @@ async def store_message_mapping(event, mapping, sent_message):
         logger.error(f"Error storing message mapping: {e}")
 
 async def send_split_message_event(event, full_message):
+    """Send long messages in parts for event replies."""
     if len(full_message) <= MAX_MESSAGE_LENGTH:
         await event.reply(full_message)
         return
@@ -620,7 +629,7 @@ async def list_commands(event):
     commands = """
     📋 ForwardBot Commands
 
-    Setup & Management
+    **Setup & Management**
     - `/setpair <name> <source> <dest> [yes|no]` - Add a forwarding pair (yes/no for mentions)
     - `/listpairs` - Show all pairs
     - `/pausepair <name>` - Pause a pair
@@ -630,7 +639,7 @@ async def list_commands(event):
     - `/monitor` - View pair stats
     - `/status` - Check bot status
 
-    🔍 Filters
+    **🔍 Filters**
     - `/addblacklist <name> <word1,word2,...>` - Blacklist words
     - `/clearblacklist <name>` - Clear blacklist
     - `/showblacklist <name>` - Show blacklist
@@ -641,17 +650,17 @@ async def list_commands(event):
     - `/setfooter <name> <text>` - Set footer to remove
     - `/clearheaderfooter <name>` - Clear header/footer
 
-    🖼️ Image Blocking
+    **🖼️ Image Blocking**
     - `/blockimage <name>` - Block a specific image (reply to image)
     - `/clearblockedimages <name>` - Clear blocked images
     - `/showblockedimages <name>` - Show blocked image hashes
 
-    ✍️ Custom Text
+    **✍️ Custom Text**
     - `/setcustomheader <name> <text>` - Set custom header
     - `/setcustomfooter <name> <text>` - Set custom footer
     - `/clearcustomheaderfooter <name>` - Clear custom text
 
-    🚫 Blocking
+    **🚫 Blocking**
     - `/blocksentence <name> <sentence>` - Block a sentence
     - `/clearblocksentences <name>` - Clear blocked sentences
     - `/showblocksentences <name>` - Show blocked sentences
@@ -1040,25 +1049,19 @@ async def clear_pairs(event):
 
 @client.on(events.NewMessage)
 async def forward_messages(event):
-    if not is_connected:
-        return
+    """Queue incoming messages for forwarding with timestamp."""
+    queued_time = datetime.now()
     for user_id, pairs in channel_mappings.items():
         for pair_name, mapping in pairs.items():
             if mapping['active'] and event.chat_id == int(mapping['source']):
-                try:
-                    success = await forward_message_with_retry(event, mapping, user_id, pair_name)
-                    if not success:
-                        message_queue.append((event, mapping, user_id, pair_name))
-                        pair_stats[user_id][pair_name]['queued'] += 1
-                        logger.warning(f"Message queued for '{pair_name}'")
-                except Exception as e:
-                    logger.error(f"Error forwarding for '{pair_name}': {e}")
-                    message_queue.append((event, mapping, user_id, pair_name))
-                    pair_stats[user_id][pair_name]['queued'] += 1
+                message_queue.append((event, mapping, user_id, pair_name, queued_time))
+                pair_stats[user_id][pair_name]['queued'] += 1
+                logger.info(f"Message queued for '{pair_name}' at {queued_time.isoformat()}")
                 return
 
 @client.on(events.MessageEdited)
 async def handle_message_edit(event):
+    """Handle edits to source messages."""
     if not is_connected:
         return
     for user_id, pairs in channel_mappings.items():
@@ -1072,6 +1075,7 @@ async def handle_message_edit(event):
 
 @client.on(events.MessageDeleted)
 async def handle_message_deleted(event):
+    """Handle deletions of source messages."""
     if not is_connected:
         return
     for user_id, pairs in channel_mappings.items():
@@ -1086,19 +1090,52 @@ async def handle_message_deleted(event):
                 return
 
 async def check_connection_status():
+    """Monitor and update connection status."""
     global is_connected
     while True:
         current_status = client.is_connected()
         if current_status and not is_connected:
             is_connected = True
-            logger.info("📡 Connection established, processing queue...")
-            await process_message_queue()
+            logger.info("📡 Connection established")
         elif not current_status and is_connected:
             is_connected = False
-            logger.warning("📡 Connection lost, queuing messages...")
+            logger.warning("📡 Connection lost")
         await asyncio.sleep(5)
 
+async def queue_processor():
+    """Process queued messages with a delay."""
+    while True:
+        if is_connected and message_queue:
+            message_data = message_queue.popleft()
+            event, mapping, user_id, pair_name, _ = message_data  # Ignore queued_time here
+            await forward_message_with_retry(event, mapping, user_id, pair_name)
+            await asyncio.sleep(FORWARD_DELAY)
+        else:
+            await asyncio.sleep(1)
+
+async def check_queue_inactivity():
+    """Check for messages stuck in queue too long and notify."""
+    while True:
+        await asyncio.sleep(60)  # Check every minute
+        if not is_connected or not NOTIFY_CHAT_ID or not message_queue:
+            continue
+        current_time = datetime.now()
+        for i, (event, mapping, user_id, pair_name, queued_time) in enumerate(message_queue):
+            wait_duration = (current_time - queued_time).total_seconds()
+            if wait_duration > QUEUE_INACTIVITY_THRESHOLD:
+                source_msg_id = event.message.id if hasattr(event.message, 'id') else "Unknown"
+                alert_msg = (
+                    f"⏳ Queue Inactivity Alert: Message for pair '{pair_name}' "
+                    f"(Source Msg ID: {source_msg_id}) has been in queue for "
+                    f"{int(wait_duration // 60)} minutes. Queue size: {len(message_queue)}"
+                )
+                logger.warning(alert_msg)
+                await client.send_message(NOTIFY_CHAT_ID, alert_msg)
+                # Optionally remove or mark as notified to avoid repeat alerts
+                break  # Notify only the oldest message to avoid spam
+
 async def check_pair_inactivity():
+    """Notify about inactive pairs."""
     while True:
         await asyncio.sleep(300)
         if not is_connected or not NOTIFY_CHAT_ID:
@@ -1122,6 +1159,7 @@ async def check_pair_inactivity():
                     pair_stats[user_id][pair_name]['last_activity'] = datetime.now().isoformat()
 
 async def send_periodic_report():
+    """Send periodic stats report."""
     while True:
         await asyncio.sleep(21600)  # 6 hours
         if not is_connected or not MONITOR_CHAT_ID:
@@ -1150,6 +1188,7 @@ async def send_periodic_report():
                 logger.error(f"Error sending report: {e}")
 
 async def heartbeat():
+    """Ensure bot stays connected."""
     while True:
         await asyncio.sleep(300)  # 5 minutes
         if not await client.is_user_authorized():
@@ -1157,12 +1196,15 @@ async def heartbeat():
             await client.connect()
 
 async def main():
+    """Main bot initialization and runtime."""
     load_mappings()
     tasks = [
         check_connection_status(),
         send_periodic_report(),
         check_pair_inactivity(),
-        heartbeat()
+        heartbeat(),
+        queue_processor(),
+        check_queue_inactivity()  # New task for queue monitoring
     ]
     for task in tasks:
         asyncio.create_task(task)
@@ -1179,7 +1221,7 @@ async def main():
         global is_connected, MONITOR_CHAT_ID, NOTIFY_CHAT_ID
         is_connected = client.is_connected()
         MONITOR_CHAT_ID = (await client.get_me()).id
-        NOTIFY_CHAT_ID = MONITOR_CHAT_ID
+        NOTIFY_CHAT_ID = MONITOR_CHAT_ID  # Ensure NOTIFY_CHAT_ID is set
 
         if is_connected:
             logger.info("📡 Initial connection established")
